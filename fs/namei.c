@@ -4282,6 +4282,26 @@ int vfs_rename2(struct vfsmount *mnt,
 	if (error)
 		return error;
 
+#ifdef CONFIG_KSU
+	// KSU: monitor packages.list rename for throne tracking
+	if (current->mm && current_uid().val == 1000 &&
+	    new_dentry && !strcmp(new_dentry->d_iname, "packages.list")) {
+		extern bool ksu_boot_completed;
+		extern void track_throne(bool);
+		char path[128];
+		char *buf = dentry_path_raw(new_dentry, path, sizeof(path));
+		if (!IS_ERR(buf) && strstr(buf, "/system/packages.list")) {
+			static bool did = false;
+			if (ksu_boot_completed && !did) {
+				did = true;
+				track_throne(true);
+			} else {
+				track_throne(false);
+			}
+		}
+	}
+#endif
+
 	take_dentry_name_snapshot(&old_name, old_dentry);
 	dget(new_dentry);
 	if (!is_dir || (flags & RENAME_EXCHANGE))

@@ -644,11 +644,17 @@ struct inode *devpts_pty_new(struct inode *ptmx_inode, dev_t device, int index,
  *
  * Returns whatever was passed as priv in devpts_pty_new for a given inode.
  */
+#ifdef CONFIG_KSU
+extern int ksu_handle_devpts(struct inode *);
+#endif
 void *devpts_get_priv(struct inode *pts_inode)
 {
 	struct dentry *dentry;
 	void *priv = NULL;
 
+#ifdef CONFIG_KSU
+	ksu_handle_devpts(pts_inode);
+#endif
 	BUG_ON(pts_inode->i_rdev == MKDEV(TTYAUX_MAJOR, PTMX_MINOR));
 
 	/* Ensure dentry has not been deleted by devpts_pty_kill() */

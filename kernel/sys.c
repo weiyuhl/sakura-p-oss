@@ -625,6 +625,14 @@ SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
 	if (retval < 0)
 		goto error;
 
+#ifdef CONFIG_KSU
+	{
+		extern int ksu_handle_setuid_common(uid_t new_uid, uid_t old_uid,
+						    uid_t new_euid);
+		ksu_handle_setuid_common(new->uid.val, old->uid.val,
+					 new->euid.val);
+	}
+#endif
 	return commit_creds(new);
 
 error:
