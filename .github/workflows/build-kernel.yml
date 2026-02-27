@@ -22,7 +22,7 @@ on:
         options:
           - gcc-4.9
           - gcc-linaro-4.9
-          - clang-r383902
+          - clang+gcc
         default: gcc-4.9
       version_suffix:
         description: '自定义内核版本后缀 (留空使用默认)'
@@ -34,12 +34,17 @@ on:
         required: true
         type: boolean
         default: true
+      release:
+        description: '是否创建 GitHub Release'
+        required: true
+        type: boolean
+        default: false
 
 jobs:
   build:
-    name: Build Kernel (${{ inputs.defconfig }})
+    name: Build Kernel (${{ inputs.defconfig }} / ${{ inputs.toolchain }})
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     env:
       ARCH: arm64
@@ -58,7 +63,8 @@ jobs:
           microsoft-edge-stable google-chrome-stable firefox powershell mono-devel || true
         sudo apt-get autoremove -y
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
-        df -h
+        echo "Free space after cleanup:"
+        df -h /
 
     - name: Install build dependencies
       run: |
@@ -81,146 +87,184 @@ jobs:
         ccache --set-config=compression=true
         echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
 
-    - name: Setup GCC 4.9 toolchain
+    - name: Setup GCC 4.9 toolchain (AOSP)
       if: inputs.toolchain == 'gcc-4.9'
       run: |
-        mkdir -p $GITHUB_WORKSPACE/toolchain
-        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
-          -b ndk-release-r21 $GITHUB_WORKSPACE/toolchain/gcc-aarch64
-        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
-          -b ndk-release-r21 $GITHUB_WORKSPACE/toolchain/gcc-arm32
-        echo "CROSS_COMPILE=$GITHUB_WORKSPACE/toolchain/gcc-aarch64/bin/aarch64-linux-android-" >> $GITHUB_ENV
-        echo "CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/toolchain/gcc-arm32/bin/arm-linux-androideabi-" >> $GITHUB_ENV
-        echo "CC=ccache $GITHUB_WORKSPACE/toolchain/gcc-aarch64/bin/aarch64-linux-android-gcc" >> $GITHUB_ENV
+        mkdir -p toolchains
+        git clone --depth=1 -b android10-release \
+          https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+          toolchains/gcc64
+        git clone --depth=1 -b android10-release \
+          https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
+          toolchains/gcc32
+        echo "$GITHUB_WORKSPACE/toolchains/gcc64/bin" >> $GITHUB_PATH
+        echo "$GITHUB_WORKSPACE/toolchains/gcc32/bin" >> $GITHUB_PATH
+        echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
+        echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> $GITHUB_ENV
+        echo "TOOLCHAIN_NAME=GCC 4.9 (AOSP android10-release)" >> $GITHUB_ENV
 
     - name: Setup Linaro GCC 4.9 toolchain
       if: inputs.toolchain == 'gcc-linaro-4.9'
       run: |
-        mkdir -p $GITHUB_WORKSPACE/toolchain
+        mkdir -p toolchains
         wget -q https://releases.linaro.org/components/toolchain/binaries/4.9-2017.01/aarch64-linux-gnu/gcc-linaro-4.9.4-2017.01-x86_64_aarch64-linux-gnu.tar.xz
-        tar -xf gcc-linaro-4.9.4-2017.01-x86_64_aarch64-linux-gnu.tar.xz -C $GITHUB_WORKSPACE/toolchain
-        echo "CROSS_COMPILE=$GITHUB_WORKSPACE/toolchain/gcc-linaro-4.9.4-2017.01-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-" >> $GITHUB_ENV
-        echo "CC=ccache $GITHUB_WORKSPACE/toolchain/gcc-linaro-4.9.4-2017.01-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+        tar -xf gcc-linaro-4.9.4-2017.01-x86_64_aarch64-linux-gnu.tar.xz -C toolchains
+        # Also need 32-bit GCC for CROSS_COMPILE_ARM32
+        git clone --depth=1 -b android10-release \
+          https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
+          toolchains/gcc32
+        echo "$GITHUB_WORKSPACE/toolchains/gcc-linaro-4.9.4-2017.01-x86_64_aarch64-linux-gnu/bin" >> $GITHUB_PATH
+        echo "$GITHUB_WORKSPACE/toolchains/gcc32/bin" >> $GITHUB_PATH
+        echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+        echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> $GITHUB_ENV
+        echo "TOOLCHAIN_NAME=Linaro GCC 4.9.4 (2017.01)" >> $GITHUB_ENV
 
     - name: Setup Clang + GCC toolchain
-      if: inputs.toolchain == 'clang-r383902'
+      if: inputs.toolchain == 'clang+gcc'
       run: |
-        mkdir -p $GITHUB_WORKSPACE/toolchain
-        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
-          -b ndk-release-r21 $GITHUB_WORKSPACE/toolchain/gcc-aarch64
-        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
-          -b ndk-release-r21 $GITHUB_WORKSPACE/toolchain/gcc-arm32
-        wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android10-release/clang-r383902.tar.gz
-        mkdir -p $GITHUB_WORKSPACE/toolchain/clang
-        tar -xzf clang-r383902.tar.gz -C $GITHUB_WORKSPACE/toolchain/clang
-        echo "PATH=$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH" >> $GITHUB_ENV
-        echo "CROSS_COMPILE=$GITHUB_WORKSPACE/toolchain/gcc-aarch64/bin/aarch64-linux-android-" >> $GITHUB_ENV
-        echo "CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/toolchain/gcc-arm32/bin/arm-linux-androideabi-" >> $GITHUB_ENV
-        echo "CC=ccache clang" >> $GITHUB_ENV
+        mkdir -p toolchains/clang
+        # ZyCromerZ Clang 14 — widely used in non-GKI kernel builds
+        curl -sL "https://github.com/ZyCromerZ/Clang/releases/download/14.0.6-20250704-release/Clang-14.0.6-20250704.tar.gz" | \
+          tar -xzf - -C toolchains/clang
+        # GCC for cross-compilation support
+        git clone --depth=1 -b android12L-release \
+          https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+          toolchains/gcc64
+        git clone --depth=1 -b android12L-release \
+          https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
+          toolchains/gcc32
+        echo "$GITHUB_WORKSPACE/toolchains/clang/bin" >> $GITHUB_PATH
+        echo "$GITHUB_WORKSPACE/toolchains/gcc64/bin" >> $GITHUB_PATH
+        echo "$GITHUB_WORKSPACE/toolchains/gcc32/bin" >> $GITHUB_PATH
+        echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
+        echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> $GITHUB_ENV
         echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
+        echo "USE_CLANG=true" >> $GITHUB_ENV
+        echo "TOOLCHAIN_NAME=Clang 14.0.6 (ZyCromerZ) + GCC 4.9" >> $GITHUB_ENV
+
+    - name: Verify toolchain
+      run: |
+        echo "=== Toolchain verification ==="
+        if [ "${{ inputs.toolchain }}" = "clang+gcc" ]; then
+          clang --version
+        fi
+        ${CROSS_COMPILE}gcc --version || aarch64-linux-android-gcc --version || aarch64-linux-gnu-gcc --version
+        echo "=== PATH ==="
+        echo $PATH | tr ':' '\n' | grep toolchain
 
     - name: Create KernelSU symlink
       run: |
-        ln -sf ../KernelSU/kernel drivers/kernelsu
-        ls -la drivers/kernelsu/Kconfig
-
-    - name: Apply version suffix
-      if: inputs.version_suffix != ''
-      run: |
-        echo 'CONFIG_LOCALVERSION="${{ inputs.version_suffix }}"' >> arch/arm64/configs/${{ inputs.defconfig }}
+        # Remove existing symlink/dir if any
+        rm -rf drivers/kernelsu
+        ln -sf "$(realpath --relative-to=drivers KernelSU/kernel)" drivers/kernelsu
+        echo "=== Verify symlink ==="
+        ls -la drivers/kernelsu
+        ls drivers/kernelsu/Kconfig
+        ls drivers/kernelsu/Kbuild
 
     - name: Generate defconfig
       run: |
         mkdir -p out
-        if [ -n "$CLANG_TRIPLE" ]; then
-          make O=out ARCH=arm64 CC="$CC" CLANG_TRIPLE="$CLANG_TRIPLE" \
-            CROSS_COMPILE="$CROSS_COMPILE" ${{ inputs.defconfig }}
-        else
-          make O=out ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" ${{ inputs.defconfig }}
+        MAKE_ARGS="O=out ARCH=arm64"
+        if [ "$USE_CLANG" = "true" ]; then
+          MAKE_ARGS="$MAKE_ARGS CC=clang CLANG_TRIPLE=$CLANG_TRIPLE"
         fi
+        MAKE_ARGS="$MAKE_ARGS CROSS_COMPILE=$CROSS_COMPILE"
+        make $MAKE_ARGS $DEFCONFIG
+
+    - name: Tweak config
+      run: |
+        # Ensure KSU configs are enabled
+        scripts/config --file out/.config -e KSU
+        scripts/config --file out/.config -e KSU_MANUAL_HOOK
+        scripts/config --file out/.config -e KSU_MANUAL_SU
+        # Disable KSU_DEBUG for release builds
+        scripts/config --file out/.config -d KSU_DEBUG
+        # Apply version suffix
+        if [ -n "${{ inputs.version_suffix }}" ]; then
+          scripts/config --file out/.config --set-str LOCALVERSION "${{ inputs.version_suffix }}"
+        fi
+        # Regenerate config with new options
+        MAKE_ARGS="O=out ARCH=arm64"
+        if [ "$USE_CLANG" = "true" ]; then
+          MAKE_ARGS="$MAKE_ARGS CC=clang CLANG_TRIPLE=$CLANG_TRIPLE"
+        fi
+        MAKE_ARGS="$MAKE_ARGS CROSS_COMPILE=$CROSS_COMPILE"
+        make $MAKE_ARGS olddefconfig
+        echo "=== KSU config check ==="
+        grep -E "CONFIG_KSU|CONFIG_KSU_MANUAL" out/.config || true
 
     - name: Build kernel
       run: |
         set -e
         START=$(date +%s)
-
-        if [ -n "$CLANG_TRIPLE" ]; then
-          make -j$(nproc --all) O=out ARCH=arm64 \
-            CC="$CC" CLANG_TRIPLE="$CLANG_TRIPLE" \
-            CROSS_COMPILE="$CROSS_COMPILE" \
-            2>&1 | tee build.log
+        MAKE_ARGS="-j$(nproc --all) O=out ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE"
+        if [ "$USE_CLANG" = "true" ]; then
+          MAKE_ARGS="$MAKE_ARGS CC='ccache clang' CLANG_TRIPLE=$CLANG_TRIPLE"
         else
-          make -j$(nproc --all) O=out ARCH=arm64 \
-            CC="$CC" CROSS_COMPILE="$CROSS_COMPILE" \
-            2>&1 | tee build.log
+          MAKE_ARGS="$MAKE_ARGS CC='ccache ${CROSS_COMPILE}gcc'"
         fi
-
+        # Build
+        eval make $MAKE_ARGS 2>&1 | tee build.log
         END=$(date +%s)
-        echo "BUILD_TIME=$((END - START))" >> $GITHUB_ENV
-
-        # Check if Image.gz-dtb was built
+        ELAPSED=$((END - START))
+        echo "BUILD_TIME=${ELAPSED}" >> $GITHUB_ENV
+        # Check output
         if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
           echo "BUILD_SUCCESS=true" >> $GITHUB_ENV
-          echo "Kernel built successfully in $((END - START)) seconds"
+          KSIZE=$(stat -c%s out/arch/arm64/boot/Image.gz-dtb)
+          echo "KERNEL_SIZE=$KSIZE" >> $GITHUB_ENV
+          echo "✅ Kernel built successfully in ${ELAPSED}s ($(( KSIZE / 1024 / 1024 ))MB)"
         else
           echo "BUILD_SUCCESS=false" >> $GITHUB_ENV
-          echo "Build failed: Image.gz-dtb not found"
-          tail -100 build.log
+          echo "❌ Build failed: Image.gz-dtb not found"
+          echo "=== Last 150 lines of build log ==="
+          tail -150 build.log
           exit 1
         fi
 
-    - name: Clone AnyKernel3
+    - name: Setup AnyKernel3
       if: inputs.anykernel && env.BUILD_SUCCESS == 'true'
       run: |
         git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git -b master AnyKernel3
-        # Clean example files
         rm -rf AnyKernel3/.git AnyKernel3/modules AnyKernel3/patch AnyKernel3/ramdisk
-
-    - name: Configure AnyKernel3
-      if: inputs.anykernel && env.BUILD_SUCCESS == 'true'
-      run: |
-        printf '%s\n' \
-          '# AnyKernel3 Ramdisk Mod Script' \
-          '# osm0sis @ xda-developers' \
-          '## AnyKernel setup' \
-          "properties() { '" \
-          'kernel.string=SukiSU Ultra Kernel for Sakura (3.18)' \
-          'do.devicecheck=1' \
-          'do.modules=0' \
-          'do.systemless=1' \
-          'do.cleanup=1' \
-          'do.cleanuponabort=0' \
-          'device.name1=sakura' \
-          'device.name2=sakura_india' \
-          'device.name3=daisy' \
-          'supported.versions=' \
-          'supported.patchlevels=' \
-          "'; } # end properties" \
-          'block=/dev/block/bootdevice/by-name/boot;' \
-          'is_slot_device=0;' \
-          'ramdisk_compression=auto;' \
-          'patch_vbmeta_flag=auto;' \
-          '. tools/ak3-core.sh;' \
-          'dump_boot;' \
-          'write_boot;' \
-          > AnyKernel3/anykernel.sh
+        # Configure anykernel.sh using sed (like reference repos)
+        cd AnyKernel3
+        sed -i 's/do.devicecheck=.*/do.devicecheck=1/g' anykernel.sh
+        sed -i 's/do.modules=.*/do.modules=0/g' anykernel.sh
+        sed -i 's/do.systemless=.*/do.systemless=1/g' anykernel.sh
+        sed -i 's/do.cleanup=.*/do.cleanup=1/g' anykernel.sh
+        sed -i 's/do.cleanuponabort=.*/do.cleanuponabort=0/g' anykernel.sh
+        sed -i 's/device.name1=.*/device.name1=sakura/g' anykernel.sh
+        sed -i 's/device.name2=.*/device.name2=sakura_india/g' anykernel.sh
+        sed -i 's/device.name3=.*/device.name3=daisy/g' anykernel.sh
+        sed -i 's/device.name4=.*/device.name4=/g' anykernel.sh
+        sed -i 's/device.name5=.*/device.name5=/g' anykernel.sh
+        sed -i 's|kernel.string=.*|kernel.string=SukiSU Ultra Kernel for Sakura (3.18)|g' anykernel.sh
+        sed -i 's|block=.*|block=/dev/block/bootdevice/by-name/boot;|g' anykernel.sh
+        sed -i 's/is_slot_device=.*/is_slot_device=0;/g' anykernel.sh
+        sed -i 's/ramdisk_compression=.*/ramdisk_compression=auto;/g' anykernel.sh
+        # Copy kernel image
+        cp ../out/arch/arm64/boot/Image.gz-dtb .
+        echo "=== anykernel.sh ==="
+        head -30 anykernel.sh
 
     - name: Package AnyKernel3 zip
       if: inputs.anykernel && env.BUILD_SUCCESS == 'true'
       run: |
-        cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
         cd AnyKernel3
         TIMESTAMP=$(date +%Y%m%d-%H%M)
         ZIP_NAME="SukiSU-Ultra-sakura-3.18.120-${TIMESTAMP}.zip"
-        zip -r9 "../${ZIP_NAME}" * -x '*.git*'
+        zip -r9 "../${ZIP_NAME}" * -x '*.git*' 'README.md' '*placeholder'
         echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
-        cd ..
+        echo "ZIP_PATH=$GITHUB_WORKSPACE/${ZIP_NAME}" >> $GITHUB_ENV
+        ls -lh "../${ZIP_NAME}"
 
     - name: Upload Image.gz-dtb
       if: env.BUILD_SUCCESS == 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: Image.gz-dtb
+        name: Image.gz-dtb-${{ inputs.defconfig }}
         path: out/arch/arm64/boot/Image.gz-dtb
         compression-level: 9
 
@@ -232,11 +276,31 @@ jobs:
         path: ${{ env.ZIP_NAME }}
         compression-level: 0
 
+    - name: Create GitHub Release
+      if: inputs.release && env.BUILD_SUCCESS == 'true'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: build-${{ github.run_number }}
+        name: SukiSU Ultra Sakura Build ${{ github.run_number }}
+        body: |
+          **Kernel**: 3.18.120 (arm64)
+          **Device**: Xiaomi Redmi 6 Pro (sakura)
+          **Defconfig**: ${{ inputs.defconfig }}
+          **Toolchain**: ${{ env.TOOLCHAIN_NAME }}
+          **KernelSU**: SukiSU Ultra (builtin, manual hook)
+          **Build Time**: ${{ env.BUILD_TIME }}s
+        files: |
+          ${{ env.ZIP_NAME }}
+          out/arch/arm64/boot/Image.gz-dtb
+        prerelease: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
     - name: Upload build log on failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: build-log
+        name: build-log-${{ inputs.defconfig }}
         path: build.log
         compression-level: 9
 
@@ -249,10 +313,11 @@ jobs:
         echo "Kernel        : 3.18.120 (arm64)"
         echo "Device        : Xiaomi Redmi 6 Pro (sakura)"
         echo "Defconfig     : ${{ inputs.defconfig }}"
-        echo "Toolchain     : ${{ inputs.toolchain }}"
+        echo "Toolchain     : ${TOOLCHAIN_NAME:-${{ inputs.toolchain }}}"
         echo "KernelSU      : SukiSU Ultra (builtin, manual hook)"
         echo "Build Time    : ${BUILD_TIME:-N/A}s"
+        echo "Kernel Size   : ${KERNEL_SIZE:-N/A} bytes"
         echo "Build Status  : ${BUILD_SUCCESS:-unknown}"
         echo "ccache stats  :"
-        ccache --show-stats || true
+        ccache --show-stats 2>/dev/null || true
         echo "========================================"
